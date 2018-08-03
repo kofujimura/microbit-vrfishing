@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+
+<html lang="jp">
+<head>
+<title>VR Fishing Game using micro:bit</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, shrink-to-fit=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<style>
+html, body {
+  width: 100%;
+  height: 100%;
+  background-color: #000;
+  color: #fff;
+  margin: 0px;
+  padding: 0;
+  overflow: hidden;
+}
+
+canvas {
+  width: 100%;
+  height: 100%;
+}
+
+#buttons {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 1;
+  background: white;
+}
+</style>
+</head>
+
+<body>
+
+  <div id="buttons">
+    <button id="fullscreen">Full Screen</button>
+    <button id="vr">VR (Smartphone only)</button>
+    <button id="connect">Connect to micro:bit</button>
+  </div>
+
+</body>
+
+<script>
+document.addEventListener('touchmove', function(e) {
+  e.preventDefault();
+});
+</script>
+
+<!-- three.js library -->
+<script src="third_party/three.js/three.js"></script>
+<!-- OrbitControls.js for controlling camera on desktop.  -->
+<script src="third_party/three.js/OrbitControls.js"></script>
+
+<script src="third_party/webvr/webvr-polyfill.min.js"></script>
+<!-- VRControls.js applies the WebVR transformations to a three.js camera object. -->
+<script src="third_party/webvr/VRControls.js"></script>
+<!-- VREffect.js handles stereo camera setup and rendering.  -->
+<script src="third_party/webvr/VREffect.js"></script>
+
+<script src="third_party/three.js/DDSLoader.js"></script>
+<script src="third_party/three.js/MTLLoader.js"></script>
+<script src="third_party/three.js/OBJLoader.js"></script>
+
+<script src="microbit-accelerometer.js"></script>
+
+<script>
+// Get config from URL
+/* global WebVRPolyfill */
+/* global THREE */
+/* global navigator */
+/* global microbit */
+
+let button = document.querySelector("#connect");
+button.addEventListener("click", microbit.connect);
+
+let config = (function() {
+  let config = {};
+  let q = window.location.search.substring(1);
+  if (q === '') {
+    return config;
+  }
+  let params = q.split('&');
+  let param, name, value;
+  for (let i = 0; i < params.length; i++) {
+    param = params[i].split('=');
+    name = param[0];
+    value = param[1];
+
+    // All config values are either boolean or float
+    config[name] = value === 'true' ? true :
+                   value === 'false' ? false :
+                   parseFloat(value);
+  }
+  return config;
+})();
+
+let polyfill = new WebVRPolyfill(config);
+
+console.log("Using webvr-polyfill version " + WebVRPolyfill.version +
+            " with configuration: " + JSON.stringify(config));
+let renderer = new THREE.WebGLRenderer();
+renderer.setPixelRatio(Math.floor(window.devicePixelRatio));
+
+// Append the canvas element created by the renderer to document body element.
+let canvas = renderer.domElement;
+document.body.appendChild(canvas);
+
+// Create a three.js scene.
+let scene = new THREE.Scene();
+
+const directionalLight = new THREE.DirectionalLight(0xFFFFFF);
+directionalLight.position.set(1, 1, 1);
+scene.add(directionalLight);
+
+// Create a three.js camera.
+let camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
+
+// Create a reticle
+let reticle = new THREE.Mesh(
+  new THREE.RingBufferGeometry(10, 0.005, 0.005),
+  new THREE.MeshBasicMaterial({ color: 0xffffff })
+);
+reticle.position.z = -0.5;
+camera.add(reticle);
+scene.add(camera);
+
+// Apply VR stereo rendering to renderer.
+let effect = new THREE.VREffect(renderer);
+effect.setSize(canvas.clientWidth, canvas.clientHeight, false);
+
+let vrDisplay, controls;
+
+// The polyfill provides this in the event this browser
+// does not support WebVR 1.1
+navigator.getVRDisplays().then(function (vrDisplays) {
+  // If we have a native display, or we have a CardboardVRDisplay
+  // from the polyfill, use it
+  if (vrDisplays.length) {
+    vrDisplay = vrDisplays[0];
+
+    // Apply VR headset positional data to camera.
+    controls = new THREE.VRControls(camera);
+
+    // Kick off the render loop.
+    vrDisplay.requestAnimationFrame(animate);
+  }
+  // Otherwise, we're on a desktop environment with no native
+  // displays, so provide controls for a monoscopic desktop view
+  else {
+    controls = new THREE.OrbitControls(camera);
+    controls.target.set(0, 0, -1);
+
+    // Disable the "Enter VR" button
+    let enterVRButton = document.querySelector('#vr');
+    enterVRButton.disabled = true;
+
+    // Kick off the render loop.
+    requestAnimationFrame(animate);
+  }
+});
+
+// Create rod 3D objects.
+const rodlength = 40.0;
+const rodradius = 0.08;
+const rodY = -3.0;
+
+let rodCoodinate = new THREE.Vector3();
+
+let geometryrod = new THREE.SphereGeometry(rodradius, 32, 32);
+let materialrod = new THREE.MeshStandardMaterial({color: 0xff9999});   //NormalMaterial();
+let rod = new THREE.Mesh(geometryrod, materialrod);
+
+let geometrybranch = new THREE.CylinderGeometry(rodradius, rodradius, rodlength, 32);
+let rodbranch = new THREE.Mesh(geometrybranch, materialrod);
+rodbranch.rotation.x = Math.PI/2;
+rodbranch.position.z = rodlength/2;
+rod.add(rodbranch);
+
+rod.position.y = rodY;
+
+scene.add(rod);
+
+let geometry = new THREE.SphereBufferGeometry( 50, 32, 32 );
+// invert the geometry on the x-axis so that all of the faces point inward
+geometry.scale( - 1, 1, 1 );
+let video = document.createElement( 'video' );
+video.crossOrigin = 'anonymous';
+video.width = 512;
+video.height = 256;
+video.loop = true;
+video.muted = true;
+video.src = 'img/ike02.mp4';
+video.setAttribute( 'webkit-playsinline', 'webkit-playsinline' );
+video.play();
+let texture = new THREE.VideoTexture( video );
+texture.minFilter = THREE.LinearFilter;
+texture.format = THREE.RGBFormat;
+
+let material   = new THREE.MeshBasicMaterial( { map : texture,side: THREE.DoubleSide } );
+let skybox = new THREE.Mesh( geometry, material );
+skybox.rotation.x = -Math.PI/18;
+skybox.rotation.y = -Math.PI/2;
+scene.add(skybox);
+
+let waterlevel = -22;
+
+// Fishing float 3D model.
+let floatradius = 0.2;
+let floatlength = 3.0;
+let float = new THREE.Group();
+let materialfloat = new THREE.MeshPhongMaterial({color: 0xeeeeee});
+
+let geometryfloatC = new THREE.CylinderGeometry(floatradius, floatradius, floatlength, 32);
+let floatC = new THREE.Mesh(geometryfloatC, materialfloat);
+floatC.position.y = floatlength/2;
+float.add(floatC);
+
+let geometryfloatT = new THREE.SphereGeometry(floatradius, 32, 32);
+let floatT = new THREE.Mesh(geometryfloatT, materialfloat);
+floatT.scale.y = 2.0;
+floatT.position.y = floatlength;
+float.add(floatT);
+
+float.position.y = waterlevel;
+float.position.x = (Math.random()-0.5)*rodlength;
+float.position.z = -10; // located far
+scene.add(float);
+
+// Strings from the rod to the float.
+let materialstring = new THREE.LineBasicMaterial({
+	color: 0xffffff
+});
+
+let geometrystring = new THREE.Geometry();
+geometrystring.vertices.push(
+	new THREE.Vector3( float.position.x, float.position.y, float.position.z ),
+	new THREE.Vector3( rod.position.x, rod.position.y, rod.position.y )
+);
+geometrystring.verticesNeedUpdate = true;
+
+let line = new THREE.Line( geometrystring, materialstring );
+scene.add(line);
+
+const onProgress = function(xhr) {console.log("Loading...");};
+const onError = function(xhr) {console.log("Error in 3D model loader.");};
+let meshfish = new THREE.Group();
+THREE.Loader.Handlers.add(/\.dds$/i, new THREE.DDSLoader());
+new THREE.MTLLoader()
+  .setPath('third_party/models/')
+  .load('fish.mtl', function(materials) {
+    materials.preload();
+    new THREE.OBJLoader()
+      .setMaterials(materials)
+      .setPath('third_party/models/')
+      .load('fish.obj', function(object) {
+        object.position.z = -5.0; // move origin
+        object.position.y = -6.0; // move origin
+        object.rotation.z = Math.PI/2;
+        object.rotation.x = -Math.PI/2;
+        object.scale.set(2,2,2);
+        meshfish.add(object);
+        meshfish.position.x = 100; // far and invisible
+        scene.add(meshfish);
+      }, onProgress, onError);
+  });
+
+// Initial position of fish.
+let fishX = (Math.random()*1.4142 - 0.707) * rodlength;
+let fishZ = - (0.5 + Math.random() * 0.207) * rodlength;
+console.log("fish=("+fishX+","+fishZ+")");
+
+const ringSize = 20;
+let ringIndex = 0;
+let ringX = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+let ringY = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+let ringZ = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+const floatspeed = 0.15;
+const windspeed = 0.1;
+
+let catchedFish = new THREE.Vector3();
+catchedFish.x = 10;
+catchedFish.y = 10;
+catchedFish.z = -20;
+
+let catching = false;
+function catchfish() {
+  if (!catching) {
+    meshfish.position.x = float.position.x;
+    meshfish.position.y = float.position.y;
+    meshfish.position.z = float.position.z;
+
+    catchedFish.x = catchedFish.x - 1.2;
+    catching = true;
+    float.scale.y = 1.0;
+    newfish();
+  }
+}
+
+function newfish () {
+  const theta = Math.PI/6 + Math.random() * Math.PI * 2 / 3;
+  const area = rodlength * (0.5 + 0.4 * Math.random());
+  fishX = area * Math.cos(theta);
+  fishZ = - area * Math.sin(theta);
+  const dist = Math.pow(float.position.x - fishX,2) + Math.pow(float.position.z - fishZ,2);
+  if (dist < 16) newfish();
+  console.log("fish=(" + fishX + "," + fishZ + ")");
+}
+
+function catchfishAnimate() {
+  if (float.position.y > rodCoodinate.y) {
+    catching = false;
+    meshfish.position.x = 100; // far and invisible
+    float.position.y = waterlevel;
+  } else {
+    float.position.y += windspeed;
+    float.position.x = rodCoodinate.x;
+    float.position.z = rodCoodinate.z;
+    meshfish.position.y = float.position.y;
+    meshfish.position.x = float.position.x;
+    meshfish.position.z = float.position.z;
+    meshfish.rotation.x = 0.3 * Math.sin(float.position.y);
+    meshfish.rotation.z = 0.5 * Math.sin(2 * float.position.y);
+  }
+}
+
+// Request animation frame loop function
+let timestamp = 0;
+function animate() {
+  timestamp++;
+  
+  if (ringIndex >= ringSize) ringIndex = 0;
+  ringX[ringIndex] = microbit.accelerometer.x;
+  ringY[ringIndex] = microbit.accelerometer.y;
+  ringZ[ringIndex] = microbit.accelerometer.z;
+  ringIndex++;
+  
+  let ringTotalX = 0;
+  let ringTotalY = 0;
+  let ringTotalZ = 0;
+
+  for (let i = 0; i < ringSize; i++) {
+    ringTotalX += ringX[i];
+    ringTotalY += ringY[i];
+    ringTotalZ += ringZ[i];
+  }
+  
+  let acX = ringTotalX / ringSize;
+  let acY = ringTotalY / ringSize;
+  let acZ = ringTotalZ / ringSize;
+  
+  let rotX = Math.atan2(Math.sqrt(acY * acY + acZ * acZ), acX);
+  let rotY = Math.atan2(Math.sqrt(acZ * acZ + acX * acX), acY);
+  
+  rod.rotation.y = rotX * 2.0;
+  rod.rotation.x = -rotY + Math.PI * 2/3;
+  
+  rodCoodinate.z = rodlength * Math.cos(rod.rotation.y) * Math.cos(-rod.rotation.x);
+  rodCoodinate.x = rodlength  * Math.sin(rod.rotation.y);
+  rodCoodinate.y = rodY + rodlength * Math.cos(rod.rotation.y) * Math.sin(-rod.rotation.x);
+  
+  if (float.position.x > rodCoodinate.x) float.position.x -= floatspeed;
+  if (float.position.x < rodCoodinate.x) float.position.x += floatspeed;
+  if (float.position.z > rodCoodinate.z) float.position.z -= floatspeed;
+  if (float.position.z < rodCoodinate.z) float.position.z += floatspeed;
+  
+  const dist = Math.pow(float.position.x - fishX,2) + Math.pow(float.position.z - fishZ,2);
+  
+  if (catching) {
+    catchfishAnimate();
+  } else {
+    float.scale.y = 1.0;
+    if (dist < 128) {
+      float.scale.y = 0.25 + 0.75 * Math.sin(timestamp / 12);
+      if (dist < 64) {
+        float.scale.y = 0.25 + 0.75 * Math.sin(timestamp / 6);
+        if (dist < 32) {
+          float.scale.y = Math.sin(timestamp / 3);
+          if (dist < 16) {
+            console.log("You got a fish.");
+            catchfish();
+          }
+        }
+      }
+    }
+  }
+  //console.log(rodCoodinate.x,",",rodCoodinate.z);
+  geometrystring.vertices[0] = rodCoodinate;  
+  geometrystring.vertices[1] = float.position;
+
+  line.geometry.verticesNeedUpdate = true;
+  
+  // If video texture is used in VR mode, the texture must update
+  texture.needsUpdate = true;
+  // Update VR headset position and apply to camera.
+  controls.update();
+
+  // Render the scene.
+  effect.render(scene, camera);
+
+  // Keep looping; if using a VRDisplay, call its requestAnimationFrame,
+  // otherwise call window.requestAnimationFrame.
+  if (vrDisplay) {
+    vrDisplay.requestAnimationFrame(animate);
+  } else {
+    requestAnimationFrame(animate);
+  }
+}
+
+function onResize() {
+  // The delay ensures the browser has a chance to layout
+  // the page and update the clientWidth/clientHeight.
+  // This problem particularly crops up under iOS.
+  if (!onResize.resizeDelay) {
+    onResize.resizeDelay = setTimeout(function () {
+      onResize.resizeDelay = null;
+      console.log('Resizing to %s x %s.', canvas.clientWidth, canvas.clientHeight);
+      effect.setSize(canvas.clientWidth, canvas.clientHeight, false);
+      camera.aspect = canvas.clientWidth / canvas.clientHeight;
+      camera.updateProjectionMatrix();
+    }, 250);
+  }
+}
+
+/*
+function onVRDisplayPresentChange() {
+  console.log('onVRDisplayPresentChange');
+  onResize();
+  buttons.hidden = vrDisplay.isPresenting;
+}
+*/
+
+function onVRDisplayConnect(e) {
+  console.log('onVRDisplayConnect', (e.display || (e.detail && e.detail.display)));
+}
+
+// Resize the WebGL canvas when we resize and also when we change modes.
+window.addEventListener('resize', onResize);
+// window.addEventListener('vrdisplaypresentchange', onVRDisplayPresentChange);
+window.addEventListener('vrdisplayconnect', onVRDisplayConnect);
+
+// Button click handlers.
+document.querySelector('button#fullscreen').addEventListener('click', function() {
+  enterFullscreen(renderer.domElement);
+});
+document.querySelector('button#vr').addEventListener('click', function() {
+  vrDisplay.requestPresent([{source: renderer.domElement}]);
+});
+
+function enterFullscreen (el) {
+  if (el.requestFullscreen) {
+    el.requestFullscreen();
+  } else if (el.mozRequestFullScreen) {
+    el.mozRequestFullScreen();
+  } else if (el.webkitRequestFullscreen) {
+    el.webkitRequestFullscreen();
+  } else if (el.msRequestFullscreen) {
+    el.msRequestFullscreen();
+  }
+}
+
+</script>
+
+</html>
